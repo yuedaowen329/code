@@ -1,0 +1,148 @@
+This file provides examples of the calculation of VaR, CoVaR, VaR network, CoVaR network, and MODWT-based decomposition. Most of the code is run using R, while a small portion is run using MATLAB and Python, with the latter being annotated.
+####VaR
+library(rugarch)
+library(parallel)
+spec <- ugarchspec(variance.model = list(model = "fGARCH", garchOrder = c(1, 1), 
+                                          submodel = "TGARCH",external.regressors = NULL, 
+                                          external.regressors = NULL,variance.targeting = FALSE), 
+                    mean.model = list(armaOrder = c(1, 0),external.regressors = NULL),  
+                    distribution.model="std", start.pars = list(),fixed.pars = list())
+fit <- ugarchfit(spec = spec, data = return, solver.control = list(trace=0))
+filt <- ugarchfilter(spec=spec, return)
+resid<-residuals(fit)
+condition_mean<-return-resid
+sigmaVar<-sigma(fit)
+z = residuals(fit)
+shape= coef(fit)["shape"]
+VaR= condition_mean + sigmaVar*qdist("std", p=0.05, mu = 0, sigma = 1,shape=coef(filt)["shape"])
+
+####CoVaR 
+#Calculate the marginal distribution of each stock market
+f = ecdf(as.numeric(z))
+#Calculate the marginal distribution of the oil market in a similar way
+f1 = ecdf(as.numeric(z[,1]))
+%% Copula is computed in matlab below
+data = xlsread('f.xlsx');
+data1 = xlsread('f1.xlsx');
+options = optimset('Display','iter','TolCon',10^-12,'TolFun',10^-4,'TolX',10^-6);
+u = data(:,1);
+v = data1(:,1);
+T = length(u);
+%Static Clayton copula
+lower = 0.0001;
+theta0 = 1;
+[ kappa LL] = fmincon('claytonCL',theta0,[],[],[],[],lower,[],[],options,[u,v]);
+% Dynamic Clayton copula
+lower = -5*ones(3,1);  
+upper =  5*ones(3,1);
+theta0 = [sqrt(kappa1);0;0];
+[kappa LL EXITFLAG,OUTPUT,LAMBDA,GRAD,HESSIAN] = fmincon('Clayton_tvp1_CL',theta0,[],[],[],[],lower,upper,[],options,[u,v],kappa);
+[LL, rho] = Clayton_tvp1_CL(kappa,[u,v],kappa);
+xlswrite('rho.xlsx', rho)
+#Calculate CoVaR in R
+CoVaR = CoVaR(0.05,0.05,par=rho,dof=shape,gamma=0,cond.mean=condition_mean,
+               cond.sigma=sigmaVar,dist="t",type="Clayton")
+
+####VaR Network
+##Obtain the VaR of all stock markets into the data frame 'data_VaR'
+library("corpcor")
+library(igraph)
+library(textreuse)
+xcor=cor(data_VaR)
+xpcor=cor2pcor(xcor)
+lower_triangle <- xpcor[lower.tri(xpcor, diag = FALSE)]
+a <- data.frame(lower_triangle)
+quantiles <- quantile(a[,1], probs = seq(0.1, 0.9, 0.1))
+xpcor[xpcor < quantiles[9]] <- 0
+Net = graph_from_adjacency_matrix(as.matrix(xpcor), mode = 'undirected', weighted = TRUE, diag = FALSE)
+#TC
+mean(xpcor[lower.tri(xpcor, diag = FALSE)]) 
+#ND
+density = edge_density(Net)
+#GE
+global_efficiency(Net,weights = NA, directed = F)
+
+####CoVaR Network
+##Obtain the CoVaR of all stock markets into the data frame 'data_CoVaR' 
+xcor=cor(data_CoVaR)
+xpcor=cor2pcor(xcor)
+lower_triangle <- xpcor[lower.tri(xpcor, diag = FALSE)]
+a <- data.frame(lower_triangle)
+quantiles <- quantile(a[,1], probs = seq(0.1, 0.9, 0.1))
+xpcor[xpcor < quantiles[9]] <- 0
+Net1 = graph_from_adjacency_matrix(as.matrix(xpcor), mode = 'undirected', weighted = TRUE, diag = FALSE)
+#TC
+mean(xpcor[lower.tri(xpcor, diag = FALSE)]) 
+#ND
+density = edge_density(Net1)
+#GE
+global_efficiency(Net1,weights = NA, directed = F)
+#Jaccard
+VaR_edge <- as_edgelist(Net1)
+VaR_edge1 <- paste(VaR_edge[,1],seq='-')
+VaR_edge11 <- as.matrix(paste(VaR_edge1,VaR_edge[,2]))
+CoVaR_edge <- as_edgelist(Net1)
+CoVaR_edge1 <- paste(CoVaR_edge[,1],seq='-')
+CoVaR_edge11 <- as.matrix(paste(CoVaR_edge1,CoVaR_edge[,2]))
+jaccard_similarity(CoVaR_edge11, VaR_edge11)
+#Kendall's coefficient
+edge_list <- as_data_frame(Net = "edges")
+edge_list1 <- as_data_frame((Net1, what = "edges")
+common_edges <- merge(edge_list, edge_list1, by = c("from", "to"))
+cor.test(common_edges$weight.x, common_edges$weight.y, method = "kendall")
+##Community structure
+#Perform community detection using Gephi to obtain membership
+#Plot using Python; here is an example:
+import pandas as pd
+import geopandas as gpd
+import matplotlib.pyplot as plt
+import matplotlib as mpl
+membership = pd.read_excel("membership.xlsx")
+url = "https://www.naturalearthdata.com/http//www.naturalearthdata.com/download/10m/cultural/ne_10m_admin_0_countries.zip"
+world = gpd.read_file(url)
+world = world[['NAME', 'geometry']]
+world_communities = world.merge(membership, left_on='NAME', right_on='node', how='left')
+mpl.rcParams['font.family'] = 'Times New Roman'
+communities = membership['id'].tolist()
+fig, ax = plt.subplots(figsize=(15, 10))
+world.boundary.plot(ax=ax, linewidth=1, color='k')
+world_communities.dropna(subset=['id']).plot(column='id', cmap='tab20', legend=True, categorical=True, ax=ax)
+world_communities[world_communities['id'].isna()].boundary.plot(ax=ax, linewidth=1, color='k')
+ax.set_title('CoVaR Network',fontsize=25)
+plt.axis('off')
+leg = ax.get_legend()
+leg.set_bbox_to_anchor((0.18, 0.6))
+leg.set_title('Community', prop={'size': 20})
+for label in leg.get_texts():
+    label.set_fontsize(18) 
+leg._ncol = len(set(communities))
+plt.savefig("result.svg", format="png",bbox_inches='tight')
+plt.show()
+
+####An example based on MODWT decomposition
+#VaR
+library(waveslim)
+C<-  modwt(VaR,'la8',n.levels=8)
+CN <-  data.frame(C$d1,C$d2,C$d3,C$d4,C$d5,C$d6,C$d7,C$d8,C$s8)
+S <-  as.data.frame(rowSums(CN[,c(1,2)]))
+L <-  as.data.frame(rowSums(CN[,c(3,4,5,6,7,8)]))
+##The short-term MODWT-VaR network is constructed based on S, and the medium- to long-term MODWT-VaR network is constructed based on L. The network construction method is similar to that described earlier.
+#CoVaR
+C<-  modwt(CoVaR,'la8',n.levels=8)
+CN <-  data.frame(C$d1,C$d2,C$d3,C$d4,C$d5,C$d6,C$d7,C$d8,C$s8)
+S <-  as.data.frame(rowSums(CN[,c(1,2)]))
+L <-  as.data.frame(rowSums(CN[,c(3,4,5,6,7,8)]))
+##The short-term MODWT-CoVaR network is constructed based on S, and the medium- to long-term MODWT-CoVaR network is constructed based on L. The network construction method is similar to that described earlier.
+####The CCI based on entropy-weighted TOPSIS is calculated using SPSSAU.
+
+
+
+
+
+
+
+
+
+
+
+

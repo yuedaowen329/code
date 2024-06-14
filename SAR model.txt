@@ -1,0 +1,11 @@
+Below is an example of calculating the SAR model. Run the code in Stata.
+/* W is the spatial weight matrix, and data contains the values of the independent variable (x) and dependent variable (y).*/
+clear
+use W
+spatwmat using W.dta, n(W) standardize 
+matrix list W
+clear
+use data
+egen id=group(country)
+xtset id date
+xsmle y x fe model(sar) wmat(W) nolog effects type(ind)
